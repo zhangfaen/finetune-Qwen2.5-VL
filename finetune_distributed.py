@@ -2,9 +2,13 @@ import torch
 import json
 import datetime
 import os
+import matplotlib.pyplot as plt
 
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
+
+# LoRA imports
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -185,7 +189,183 @@ def write_chat_template(processor, output_dir):
         writer.write(chat_template_json_string)
         logger.info(f"chat template saved in {output_chat_template_file}")
 
-def train():
+
+def setup_lora_config():
+    """
+    Setup LoRA configuration for the model.
+    
+    Returns:
+        LoraConfig: LoRA configuration object
+    """
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
+        r=16,  # LoRA rank
+        lora_alpha=32,  # LoRA alpha parameter
+        lora_dropout=0.1,  # Dropout probability for LoRA layers
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj"
+        ],
+        bias="none",
+        use_rslora=False,
+        use_dora=False,
+    )
+    
+    return lora_config
+
+
+def apply_lora_to_model(model):
+    """
+    Apply LoRA to the model.
+    
+    Args:
+        model: The base model
+
+    Returns:
+        model: Model with LoRA applied
+    """
+    lora_config = setup_lora_config()
+    model = get_peft_model(model, lora_config)
+    return model
+        
+    
+
+
+def plot_training_loss(loss_history, epoch_losses, output_dir, training_type="LoRA"):
+    """
+    Plot training loss history and save to file.
+    
+    Args:
+        loss_history (list): List of loss values for each training step
+        epoch_losses (list): List of average loss values for each epoch
+        output_dir (str): Directory to save the plot
+        training_type (str): Type of training ("LoRA" or "Full")
+    """
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+    
+    # Plot 1: Loss over all steps
+    ax1.plot(loss_history, label=f'{training_type} Training Loss', color='blue', alpha=0.7)
+    ax1.set_xlabel('Step')
+    ax1.set_ylabel('Loss')
+    ax1.set_title(f'{training_type} Training Loss Over All Steps')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    # Plot 2: Average loss per epoch
+    if epoch_losses:
+        ax2.plot(range(1, len(epoch_losses) + 1), epoch_losses, 
+                label=f'{training_type} Average Epoch Loss', color='red', marker='o', linewidth=2)
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Average Loss')
+        ax2.set_title(f'{training_type} Average Training Loss Per Epoch')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+    
+    plt.tight_layout()
+    plot_path = os.path.join(output_dir, f'{training_type.lower()}_loss_history.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Save loss data to JSON for further analysis
+    loss_data = {
+        'training_type': training_type,
+        'step_losses': loss_history,
+        'epoch_losses': epoch_losses
+    }
+    json_path = os.path.join(output_dir, f'{training_type.lower()}_loss_data.json')
+    with open(json_path, 'w') as f:
+        json.dump(loss_data, f, indent=2)
+
+
+def compare_training_methods(lora_loss_data, full_loss_data, output_dir):
+    """
+    Compare LoRA and full fine-tuning loss curves.
+    
+    Args:
+        lora_loss_data (dict): LoRA training loss data
+        full_loss_data (dict): Full fine-tuning loss data
+        output_dir (str): Directory to save comparison plots
+    """
+
+    # Create comparison plots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
+    
+    # Plot 1: Step-wise loss comparison
+    lora_steps = lora_loss_data.get('step_losses', [])
+    full_steps = full_loss_data.get('step_losses', [])
+    
+    if lora_steps and full_steps:
+        # Normalize to same length for fair comparison
+        max_steps = max(len(lora_steps), len(full_steps))
+        if len(lora_steps) < max_steps:
+            lora_steps.extend([lora_steps[-1]] * (max_steps - len(lora_steps)))
+        if len(full_steps) < max_steps:
+            full_steps.extend([full_steps[-1]] * (max_steps - len(full_steps)))
+        
+        ax1.plot(lora_steps, label='LoRA Training', color='blue', alpha=0.7, linewidth=2)
+        ax1.plot(full_steps, label='Full Fine-tuning', color='red', alpha=0.7, linewidth=2)
+        ax1.set_xlabel('Step')
+        ax1.set_ylabel('Loss')
+        ax1.set_title('LoRA vs Full Fine-tuning Loss Comparison (Steps)')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+    
+    # Plot 2: Epoch-wise loss comparison
+    lora_epochs = lora_loss_data.get('epoch_losses', [])
+    full_epochs = full_loss_data.get('epoch_losses', [])
+    
+    if lora_epochs and full_epochs:
+        # Normalize to same length for fair comparison
+        max_epochs = max(len(lora_epochs), len(full_epochs))
+        if len(lora_epochs) < max_epochs:
+            lora_epochs.extend([lora_epochs[-1]] * (max_epochs - len(lora_epochs)))
+        if len(full_epochs) < max_epochs:
+            full_epochs.extend([full_epochs[-1]] * (max_epochs - len(full_epochs)))
+        
+        epochs_range = range(1, max_epochs + 1)
+        ax2.plot(epochs_range, lora_epochs, label='LoRA Training', color='blue', marker='o', linewidth=2)
+        ax2.plot(epochs_range, full_epochs, label='Full Fine-tuning', color='red', marker='s', linewidth=2)
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Average Loss')
+        ax2.set_title('LoRA vs Full Fine-tuning Loss Comparison (Epochs)')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+    
+    plt.tight_layout()
+    comparison_path = os.path.join(output_dir, 'training_comparison.png')
+    plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Save comparison data
+    comparison_data = {
+        'lora_loss_data': lora_loss_data,
+        'full_loss_data': full_loss_data,
+        'comparison_metrics': {
+            'lora_final_loss': lora_steps[-1] if lora_steps else None,
+            'full_final_loss': full_steps[-1] if full_steps else None,
+            'lora_final_epoch_loss': lora_epochs[-1] if lora_epochs else None,
+            'full_final_epoch_loss': full_epochs[-1] if full_epochs else None,
+        }
+    }
+    
+    comparison_json_path = os.path.join(output_dir, 'training_comparison.json')
+    with open(comparison_json_path, 'w') as f:
+        json.dump(comparison_data, f, indent=2)
+
+def train(use_lora=True):
+    """
+    Train the model with LoRA or full fine-tuning.
+    
+    Args:
+        use_lora (bool): If True, use LoRA fine-tuning. If False, use full fine-tuning.
+    """
     # Load the model on the available device(s)
     # We recommend enabling flash_attention_2 for better acceleration and memory saving, especially in multi-image and video scenarios.
     # model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -199,6 +379,15 @@ def train():
         "Qwen/Qwen2.5-VL-3B-Instruct", torch_dtype="bfloat16"
     )
 
+    # Apply LoRA to the model based on parameter
+    if use_lora:
+        if accelerator.is_local_main_process:
+            logger.info("Applying LoRA to the model...")
+        model = apply_lora_to_model(model)
+    else:
+        if accelerator.is_local_main_process:
+            logger.info("Using full fine-tuning (LoRA disabled)")
+        model = model  # No LoRA applied
 
     # Load processor. 
     # The default range for the number of visual tokens per image in the model is 4-16384. You can set min_pixels and max_pixels according to your needs, such as a token count range of 256-1280, to balance speed and memory usage.
@@ -224,11 +413,33 @@ def train():
     )
 
     model.train()
-    epochs = 4
-    optimizer = AdamW(model.parameters(), lr=1e-5)
+    epochs = 10
+    
+    # Use different learning rate for LoRA vs full fine-tuning
+    if use_lora:
+        assert hasattr(model, 'peft_config'), "Model should have peft_config when using LoRA"
+        # Higher learning rate for LoRA training
+        lr = 2e-4
+        if accelerator.is_local_main_process:
+            logger.info(f"Using LoRA training with learning rate: {lr}")
+    else:
+        # Standard learning rate for full fine-tuning
+        lr = 1e-5
+        if accelerator.is_local_main_process:
+            logger.info(f"Using full fine-tuning with learning rate: {lr}")
+    
+    optimizer = AdamW(model.parameters(), lr=lr)
     model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
+    
+    # Initialize loss tracking
+    loss_history = []
+    epoch_losses = []
+    
     for epoch in range(epochs):
         steps = 0
+        epoch_loss_sum = 0.0
+        epoch_steps = 0
+        
         for batch in train_loader:
             steps += 1
             with accelerator.accumulate(model):
@@ -242,26 +453,62 @@ def train():
                 # If use deepseed,`accelerator.backward(loss)` is doing that automatically. Therefore, this function will not work.
                 # For detail, see https://github.com/huggingface/accelerate/blob/main/src/accelerate/utils/deepspeed.py , DeepSpeedOptimizerWrapper.zero_grad is an "pass" function.
                 optimizer.zero_grad() 
+                
                 if accelerator.is_local_main_process:
-                    logger.info(f"Batch {steps} of epoch {epoch + 1}/{epochs}, training loss : {loss.item():.10f}")
+                    current_loss = loss.item()
+                    loss_history.append(current_loss)
+                    epoch_loss_sum += current_loss
+                    epoch_steps += 1
+                    logger.info(f"Batch {steps} of epoch {epoch + 1}/{epochs}, training loss : {current_loss:.10f}")
+        
+        # Calculate average loss for this epoch
+        if accelerator.is_local_main_process and epoch_steps > 0:
+            avg_epoch_loss = epoch_loss_sum / epoch_steps
+            epoch_losses.append(avg_epoch_loss)
+            logger.info(f"Epoch {epoch + 1}/{epochs} completed. Average loss: {avg_epoch_loss:.10f}")
 
     # Synchronize all processes to ensure training completion before saving the model.
     accelerator.wait_for_everyone()
     # Unwrap the model from distributed training wrappers
     unwrapped_model = accelerator.unwrap_model(model)
+    
     # Save the model using HuggingFace's pretrained format
-
-    unwrapped_model.save_pretrained(
-        output_dir,
-        is_main_process=accelerator.is_main_process,# Only save from main process to avoid conflicts
-        save_function=accelerator.save,
-        max_shard_size="20GB", # make sure only 1 shard. default is 5GB, ideally it should be 2 shards, however this function will create 2 folders, one folder has 3 files: model-00001-of-00002.safetensors, model-00002-of-00002.safetensors and model.safetensors; the other folder has model.safetensors file. They have some duplicated keys. Need investigate.
-        state_dict=accelerator.get_state_dict(model),# Get complete state dict including optimizer states (critical for DeepSpeed)
-    )
+    if use_lora and hasattr(unwrapped_model, 'peft_config'):
+        # Save LoRA model
+        if accelerator.is_local_main_process:
+            logger.info("Saving LoRA model...")
+        unwrapped_model.save_pretrained(
+            output_dir,
+            is_main_process=accelerator.is_main_process,
+            save_function=accelerator.save,
+        )
+    else:
+        # Save full fine-tuned model
+        if accelerator.is_local_main_process:
+            logger.info("Saving full fine-tuned model...")
+        unwrapped_model.save_pretrained(
+            output_dir,
+            is_main_process=accelerator.is_main_process,
+            save_function=accelerator.save,
+            max_shard_size="20GB",
+            state_dict=accelerator.get_state_dict(model),
+        )
+    
     if accelerator.is_local_main_process:
         processor.save_pretrained(output_dir)
         write_chat_template(processor, output_dir)
 
+    # Plot loss history
+    if accelerator.is_local_main_process:
+        training_type = "LoRA" if use_lora else "Full"
+        plot_training_loss(loss_history, epoch_losses, output_dir, logger, training_type)
+
 if __name__ == "__main__":
-    train()
+    import argparse
+    parser = argparse.ArgumentParser(description='Train Qwen2.5-VL model with LoRA or full fine-tuning')
+    parser.add_argument('--use_lora', type=bool, default=True,
+                       help='Use LoRA (True) or full fine-tuning (False). Default: True')
+
+    args = parser.parse_args()    
+    train(use_lora=args.use_lora)
 

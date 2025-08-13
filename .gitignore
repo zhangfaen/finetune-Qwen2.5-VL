@@ -1,0 +1,62 @@
+# 大文件类型
+*.pth
+*.pt
+*.safetensors
+*.bin
+*.ckpt
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.npy
+*.npz
+
+# 模型文件
+models/
+checkpoints/
+weights/
+*.model
+*.weights
+
+# 数据集文件
+data/
+datasets/
+*.csv
+*.json
+*.jsonl
+*.txt
+*.tsv
+
+# 日志文件
+logs/
+*.log
+tensorboard_logs/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+
+# 缓存文件
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# 环境文件
+.env
+.venv/
+venv/
+env/
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db 
